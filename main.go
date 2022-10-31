@@ -192,8 +192,6 @@ func (client *FishFishClient) Kill() {
 }
 
 func (client *FishFishClient) baseDomainRequest(requestType, domain, category, description, target string) error {
-	var err error
-
 	body := CreateDomainBody{
 		category:    category,
 		description: description,
@@ -201,7 +199,6 @@ func (client *FishFishClient) baseDomainRequest(requestType, domain, category, d
 	}
 
 	jsonBody, err := json.Marshal(body)
-
 	if err != nil {
 		return err
 	}
@@ -231,15 +228,13 @@ func (client *FishFishClient) UpdateDomain(domain, category, description, target
 }
 
 func (client *FishFishClient) DeleteDomain(domain string) error {
-	var err error
-
 	sessionToken := client.getSessionToken()
 
 	if len(sessionToken) <= 0 {
 		return errors.New("This function requires authentication!")
 	}
 
-	_, err = client.authenticatedRequest(fmt.Sprintf("domains/%s", domain), "DELETE", "{}")
+	_, err := client.authenticatedRequest(fmt.Sprintf("domains/%s", domain), "DELETE", "{}")
 	return err
 }
 
