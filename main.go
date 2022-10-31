@@ -56,7 +56,7 @@ type TokenResponse struct {
 type CreateDomainBody struct {
 	Category    string `json:"category"`
 	Description string `json:"description"`
-	Target      string `json:"target"`
+	Target      string `json:"target,omitempty"`
 }
 
 type UpdateDomainBody struct {
@@ -207,36 +207,14 @@ func (client *FishFishClient) Kill() {
 	GNST.ctxCancel()
 }
 
-func (client *FishFishClient) baseDomainRequest(requestType, domain, category, description, target string) error {
-	body := CreateDomainBody{
-		Category:    category,
-		Description: description,
-		Target:      target,
-	}
-
-	jsonBody, err := json.Marshal(body)
-	if err != nil {
-		return err
-	}
-
-	_, err = client.authenticatedRequest(fmt.Sprintf("domains/%s", domain), requestType, string(jsonBody))
-	return err
-}
-
-func (client *FishFishClient) AddDomain(domain, category, description, target string) error {
+func (client *FishFishClient) AddDomain(domain string, options CreateDomainBody) error {
 	sessionToken := client.getSessionToken()
 
 	if len(sessionToken) <= 0 {
 		return errors.New("This function requires authentication!")
 	}
 
-	body := CreateDomainBody{
-		Category:    category,
-		Description: description,
-		Target:      target,
-	}
-
-	jsonBody, err := json.Marshal(body)
+	jsonBody, err := json.Marshal(options)
 	if err != nil {
 		return err
 	}
