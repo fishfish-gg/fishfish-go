@@ -54,15 +54,31 @@ type TokenResponse struct {
 }
 
 type CreateDomainBody struct {
-	category    string
-	description string
-	target      string
+	Category    string `json:"category"`
+	Description string `json:"description"`
+	Target      string `json:"target"`
+}
+
+type UpdateDomainBody struct {
+	Category    string `json:"category,omitempty"`
+	Description string `json:"description,omitempty"`
+	Target      string `json:"target,omitempty"`
 }
 
 // Target API version
 var APIVersion = 1
 
 var validCategories = []string{"safe", "malware", "phishing"}
+
+func validCategory(category string) bool {
+	for _, v := range validCategories {
+		if v == category {
+			return true
+		}
+	}
+
+	return false
+}
 
 func (client *FishFishClient) getAPIUrl(path string) string {
 	return fmt.Sprintf("%s%s", client.url, path)
@@ -193,9 +209,9 @@ func (client *FishFishClient) Kill() {
 
 func (client *FishFishClient) baseDomainRequest(requestType, domain, category, description, target string) error {
 	body := CreateDomainBody{
-		category:    category,
-		description: description,
-		target:      target,
+		Category:    category,
+		Description: description,
+		Target:      target,
 	}
 
 	jsonBody, err := json.Marshal(body)
@@ -214,17 +230,41 @@ func (client *FishFishClient) AddDomain(domain, category, description, target st
 		return errors.New("This function requires authentication!")
 	}
 
-	return client.baseDomainRequest("POST", domain, category, description, target)
+	body := CreateDomainBody{
+		Category:    category,
+		Description: description,
+		Target:      target,
+	}
+
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+
+	_, err = client.authenticatedRequest(fmt.Sprintf("domains/%s", domain), "POST", string(jsonBody))
+
+	return err
 }
 
-func (client *FishFishClient) UpdateDomain(domain, category, description, target string) error {
+func (client *FishFishClient) UpdateDomain(domain string, options UpdateDomainBody) error {
 	sessionToken := client.getSessionToken()
 
 	if len(sessionToken) <= 0 {
 		return errors.New("This function requires authentication!")
 	}
 
-	return client.baseDomainRequest("PATCH", domain, category, description, target)
+	if !validCategory(options.Category) {
+		return errors.New("Invalid category!")
+	}
+
+	jsonBody, err := json.Marshal(options)
+	if err != nil {
+		return err
+	}
+
+	_, err = client.authenticatedRequest(fmt.Sprintf("domains/%s", domain), "PATCH", string(jsonBody))
+
+	return err
 }
 
 func (client *FishFishClient) DeleteDomain(domain string) error {
