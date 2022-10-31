@@ -1,6 +1,7 @@
 package fishfish
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -52,8 +53,16 @@ type TokenResponse struct {
 	expires int
 }
 
+type CreateDomainBody struct {
+	category    string
+	description string
+	target      string
+}
+
 // Target API version
 var APIVersion = 1
+
+var validCategories = []string{"safe", "malware", "phishing"}
 
 func (client *FishFishClient) getAPIUrl(path string) string {
 	return fmt.Sprintf("%s%s", client.url, path)
@@ -65,12 +74,13 @@ func DefaultConfig() Config {
 	}
 }
 
-func (client *FishFishClient) fetchDomains() (err error) {
+func (client *FishFishClient) fetchDomains() error {
+	var err error
 	var resp http.Response
 	sessionToken := client.getSessionToken()
 
 	if len(sessionToken) > 0 {
-		httpResp, httpErr := client.authenticatedRequest("domains", "GET")
+		httpResp, httpErr := client.authenticatedRequest("domains", "GET", "{}")
 
 		resp = *httpResp
 		err = httpErr
@@ -83,12 +93,12 @@ func (client *FishFishClient) fetchDomains() (err error) {
 	}
 
 	if err != nil {
-		return
+		return err
 	}
 
 	if resp.StatusCode != 200 {
 		err = errors.New(fmt.Sprintf("API Returned non-200 status code.\nCode received: %d", resp.StatusCode))
-		return
+		return err
 	}
 
 	var domains []string
@@ -96,7 +106,7 @@ func (client *FishFishClient) fetchDomains() (err error) {
 	decoder := json.NewDecoder(resp.Body)
 
 	if err = decoder.Decode(&domains); err != nil {
-		return
+		return err
 	}
 
 	client.domainCache.mx.Lock()
@@ -105,15 +115,18 @@ func (client *FishFishClient) fetchDomains() (err error) {
 
 	defer client.domainCache.mx.Unlock()
 
-	return
+	return err
 }
 
-func (client *FishFishClient) fetchSessionToken() (err error, token string) {
+func (client *FishFishClient) fetchSessionToken() (error, string) {
+	var err error
+	var token string
+
 	req, _ := http.NewRequest("GET", client.getAPIUrl("users/@me/tokens"), nil)
 	req.Header.Set("Authorization", client.config.Auth)
 	resp, err := client.httpClient.Do(req)
 	if err != nil {
-		return
+		return err, ""
 	}
 
 	defer resp.Body.Close()
@@ -122,31 +135,31 @@ func (client *FishFishClient) fetchSessionToken() (err error, token string) {
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return
+		return err, ""
 	}
 
 	err = json.Unmarshal(body, &tokenResponse)
 	if err != nil {
-		return
+		return err, ""
 	}
 
 	token = tokenResponse.token
 
-	return
+	return err, token
 }
 
-func (client *FishFishClient) getSessionToken() (token string) {
+func (client *FishFishClient) getSessionToken() string {
 	client.sessionToken.mx.Lock()
 
-	token = client.sessionToken.token
+	token := client.sessionToken.token
 
 	defer client.sessionToken.mx.Unlock()
 
-	return
+	return token
 }
 
-func (client *FishFishClient) authenticatedRequest(path, requestType string) (*http.Response, error) {
-	req, _ := http.NewRequest(strings.ToUpper(requestType), client.getAPIUrl(path), nil)
+func (client *FishFishClient) authenticatedRequest(path, requestType, body string) (*http.Response, error) {
+	req, _ := http.NewRequest(strings.ToUpper(requestType), client.getAPIUrl(path), bytes.NewBufferString(body))
 	req.Header.Set("Authorization", client.getSessionToken())
 	resp, err := client.httpClient.Do(req)
 
@@ -176,6 +189,58 @@ func (client *FishFishClient) Kill() {
 
 	GNST.ticker.Stop()
 	GNST.ctxCancel()
+}
+
+func (client *FishFishClient) baseDomainRequest(requestType, domain, category, description, target string) error {
+	var err error
+
+	body := CreateDomainBody{
+		category:    category,
+		description: description,
+		target:      target,
+	}
+
+	jsonBody, err := json.Marshal(body)
+
+	if err != nil {
+		return err
+	}
+
+	_, err = client.authenticatedRequest(fmt.Sprintf("domains/%s", domain), requestType, string(jsonBody))
+	return err
+}
+
+func (client *FishFishClient) AddDomain(domain, category, description, target string) error {
+	sessionToken := client.getSessionToken()
+
+	if len(sessionToken) <= 0 {
+		return errors.New("This function requires authentication!")
+	}
+
+	return client.baseDomainRequest("POST", domain, category, description, target)
+}
+
+func (client *FishFishClient) UpdateDomain(domain, category, description, target string) error {
+	sessionToken := client.getSessionToken()
+
+	if len(sessionToken) <= 0 {
+		return errors.New("This function requires authentication!")
+	}
+
+	return client.baseDomainRequest("PATCH", domain, category, description, target)
+}
+
+func (client *FishFishClient) DeleteDomain(domain string) error {
+	var err error
+
+	sessionToken := client.getSessionToken()
+
+	if len(sessionToken) <= 0 {
+		return errors.New("This function requires authentication!")
+	}
+
+	_, err = client.authenticatedRequest(fmt.Sprintf("domains/%s", domain), "DELETE", "{}")
+	return err
 }
 
 func New(config Config) *FishFishClient {
