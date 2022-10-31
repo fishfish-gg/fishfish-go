@@ -66,8 +66,22 @@ func DefaultConfig() Config {
 }
 
 func (client *FishFishClient) fetchDomains() (err error) {
-	url := client.getAPIUrl("domains")
-	resp, err := http.Get(url)
+	var resp http.Response
+	sessionToken := client.getSessionToken()
+
+	if len(sessionToken) > 0 {
+		httpResp, httpErr := client.authenticatedRequest("domains", "GET")
+
+		resp = *httpResp
+		err = httpErr
+	} else {
+		url := client.getAPIUrl("domains")
+		httpResp, httpErr := http.Get(url)
+
+		resp = *httpResp
+		err = httpErr
+	}
+
 	if err != nil {
 		return
 	}
@@ -176,7 +190,6 @@ func New(config Config) *FishFishClient {
 
 	// Fetch domains ticker
 	ctx1, cancel1 := context.WithCancel(context.Background())
-
 	ticker1 := time.NewTicker(time.Millisecond * time.Duration(config.CacheInterval))
 
 	go func() {
@@ -189,43 +202,46 @@ func New(config Config) *FishFishClient {
 			}
 		}
 	}()
+
 	fetchDomainsTicker := ClientTicker{
 		ticker:    ticker1,
 		ctxCancel: cancel1,
 	}
 
-	// Get session token ticker
-	ctx2, cancel2 := context.WithCancel(context.Background())
-
-	ticker2 := time.NewTicker(time.Hour * time.Duration(1))
-
-	go func() {
-		for {
-			select {
-			case <-ticker2.C:
-				err, sessionToken := client.fetchSessionToken()
-				if err != nil {
-					log.Fatal(err)
-				}
-
-				client.sessionToken.mx.Lock()
-
-				client.sessionToken.token = sessionToken
-
-				defer client.sessionToken.mx.Unlock()
-			case <-ctx2.Done():
-				return
-			}
-		}
-	}()
-	getNewSessionTicker := ClientTicker{
-		ticker:    ticker2,
-		ctxCancel: cancel2,
-	}
-
-	// Add tickers to client
 	client.tickers.fetchDomainsTicker = fetchDomainsTicker
-	client.tickers.getNewSessionTicker = getNewSessionTicker
+
+	if len(config.Auth) > 0 {
+		// Get session token ticker
+		ctx2, cancel2 := context.WithCancel(context.Background())
+		ticker2 := time.NewTicker(time.Hour * time.Duration(1))
+
+		go func() {
+			for {
+				select {
+				case <-ticker2.C:
+					err, sessionToken := client.fetchSessionToken()
+					if err != nil {
+						log.Fatal(err)
+					}
+
+					client.sessionToken.mx.Lock()
+
+					client.sessionToken.token = sessionToken
+
+					defer client.sessionToken.mx.Unlock()
+				case <-ctx2.Done():
+					return
+				}
+			}
+		}()
+
+		getNewSessionTicker := ClientTicker{
+			ticker:    ticker2,
+			ctxCancel: cancel2,
+		}
+
+		client.tickers.getNewSessionTicker = getNewSessionTicker
+	}
 
 	return client
 }
