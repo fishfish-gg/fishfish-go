@@ -17,6 +17,7 @@ import (
 type Config struct {
 	Auth          string
 	CacheInterval int
+	Permissions   []string
 }
 
 type domainCache struct {
@@ -48,9 +49,13 @@ type FishFishClient struct {
 	httpClient   *http.Client
 }
 
+type createTokenRequest struct {
+	Permissions []string `json:"Permissions"`
+}
+
 type TokenResponse struct {
-	token   string
-	expires int
+	Token   string `json:"token"`
+	Expires int    `json:"expires"`
 }
 
 type CreateDomainBody struct {
@@ -88,6 +93,71 @@ func DefaultConfig() Config {
 	return Config{
 		CacheInterval: 5000,
 	}
+}
+
+func (client *FishFishClient) fetchSessionToken() (string, error) {
+	var err error
+	var token string
+
+	requestBody := createTokenRequest{
+		Permissions: client.config.Permissions,
+	}
+
+	requestBodyJson, err := json.Marshal(requestBody)
+
+	req, _ := http.NewRequest("POST", client.getAPIUrl("users/@me/tokens"), bytes.NewBuffer(requestBodyJson))
+	req.Header.Set("Authorization", client.config.Auth)
+
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		return token, err
+	}
+
+	var tokenResponse TokenResponse
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	json.Unmarshal(body, &tokenResponse)
+
+	token = tokenResponse.Token
+
+	return token, err
+}
+
+func (client *FishFishClient) updateSessionToken() string {
+	sessionToken, err := client.fetchSessionToken()
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	client.sessionToken.mx.Lock()
+	client.sessionToken.token = sessionToken
+
+	client.sessionToken.mx.Unlock()
+
+	return sessionToken
+}
+
+func (client *FishFishClient) getSessionToken() string {
+	client.sessionToken.mx.Lock()
+
+	token := client.sessionToken.token
+
+	defer client.sessionToken.mx.Unlock()
+
+	return token
+}
+
+func (client *FishFishClient) authenticatedRequest(path, requestType, body string) (*http.Response, error) {
+	req, _ := http.NewRequest(strings.ToUpper(requestType), client.getAPIUrl(path), bytes.NewBufferString(body))
+	req.Header.Set("Authorization", client.getSessionToken())
+	resp, err := client.httpClient.Do(req)
+
+	return resp, err
 }
 
 func (client *FishFishClient) fetchDomains() error {
@@ -134,54 +204,6 @@ func (client *FishFishClient) fetchDomains() error {
 	return err
 }
 
-func (client *FishFishClient) fetchSessionToken() (error, string) {
-	var err error
-	var token string
-
-	req, _ := http.NewRequest("GET", client.getAPIUrl("users/@me/tokens"), nil)
-	req.Header.Set("Authorization", client.config.Auth)
-	resp, err := client.httpClient.Do(req)
-	if err != nil {
-		return err, ""
-	}
-
-	defer resp.Body.Close()
-
-	tokenResponse := TokenResponse{}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err, ""
-	}
-
-	err = json.Unmarshal(body, &tokenResponse)
-	if err != nil {
-		return err, ""
-	}
-
-	token = tokenResponse.token
-
-	return err, token
-}
-
-func (client *FishFishClient) getSessionToken() string {
-	client.sessionToken.mx.Lock()
-
-	token := client.sessionToken.token
-
-	defer client.sessionToken.mx.Unlock()
-
-	return token
-}
-
-func (client *FishFishClient) authenticatedRequest(path, requestType, body string) (*http.Response, error) {
-	req, _ := http.NewRequest(strings.ToUpper(requestType), client.getAPIUrl(path), bytes.NewBufferString(body))
-	req.Header.Set("Authorization", client.getSessionToken())
-	resp, err := client.httpClient.Do(req)
-
-	return resp, err
-}
-
 func (client *FishFishClient) GetDomains() []string {
 	client.domainCache.mx.Lock()
 
@@ -209,7 +231,6 @@ func (client *FishFishClient) Kill() {
 
 func (client *FishFishClient) AddDomain(domain string, options CreateDomainBody) error {
 	sessionToken := client.getSessionToken()
-
 	if len(sessionToken) <= 0 {
 		return errors.New("This function requires authentication!")
 	}
@@ -221,6 +242,9 @@ func (client *FishFishClient) AddDomain(domain string, options CreateDomainBody)
 
 	_, err = client.authenticatedRequest(fmt.Sprintf("domains/%s", domain), "POST", string(jsonBody))
 
+	if err != nil {
+		client.fetchDomains()
+	}
 	return err
 }
 
@@ -266,6 +290,32 @@ func New(config Config) *FishFishClient {
 
 	client.fetchDomains()
 
+	if len(config.Auth) > 0 {
+		client.updateSessionToken()
+
+		// Get session token ticker
+		ctx2, cancel2 := context.WithCancel(context.Background())
+		ticker2 := time.NewTicker(time.Hour * time.Duration(1))
+
+		go func() {
+			for {
+				select {
+				case <-ticker2.C:
+					client.updateSessionToken()
+				case <-ctx2.Done():
+					return
+				}
+			}
+		}()
+
+		getNewSessionTicker := ClientTicker{
+			ticker:    ticker2,
+			ctxCancel: cancel2,
+		}
+
+		client.tickers.getNewSessionTicker = getNewSessionTicker
+	}
+
 	// Fetch domains ticker
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	ticker1 := time.NewTicker(time.Millisecond * time.Duration(config.CacheInterval))
@@ -287,39 +337,6 @@ func New(config Config) *FishFishClient {
 	}
 
 	client.tickers.fetchDomainsTicker = fetchDomainsTicker
-
-	if len(config.Auth) > 0 {
-		// Get session token ticker
-		ctx2, cancel2 := context.WithCancel(context.Background())
-		ticker2 := time.NewTicker(time.Hour * time.Duration(1))
-
-		go func() {
-			for {
-				select {
-				case <-ticker2.C:
-					err, sessionToken := client.fetchSessionToken()
-					if err != nil {
-						log.Fatal(err)
-					}
-
-					client.sessionToken.mx.Lock()
-
-					client.sessionToken.token = sessionToken
-
-					defer client.sessionToken.mx.Unlock()
-				case <-ctx2.Done():
-					return
-				}
-			}
-		}()
-
-		getNewSessionTicker := ClientTicker{
-			ticker:    ticker2,
-			ctxCancel: cancel2,
-		}
-
-		client.tickers.getNewSessionTicker = getNewSessionTicker
-	}
 
 	return client
 }
