@@ -7,21 +7,48 @@ import (
 	"time"
 )
 
+type Config struct {
+	Auth          string
+	CacheInterval int
+	Permissions   []string
+}
+
+type ClientTicker struct {
+	ticker    *time.Ticker
+	ctxCancel context.CancelFunc
+}
+
+type ClientTickers struct {
+	syncDomainsTicker   ClientTicker
+	getNewSessionTicker ClientTicker
+}
+
+type Client struct {
+	config       Config
+	sessionToken SessionToken
+	url          string
+	domainCache  DomainCache
+	tickers      ClientTickers
+	httpClient   *http.Client
+}
+
+var APIVersion = 1
+
 func DefaultConfig() Config {
 	return Config{
 		CacheInterval: 5000,
 	}
 }
 
-func New(config Config) *FishFishClient {
-	var client *FishFishClient
-	client = &FishFishClient{
+func New(config Config) *Client {
+	var client *Client
+	client = &Client{
 		config:     config,
 		url:        fmt.Sprintf("https://api.fishfish.gg/v%d/", APIVersion),
 		httpClient: &http.Client{},
 	}
 
-	client.fetchDomains()
+	client.syncDomains()
 
 	if len(config.Auth) > 0 {
 		client.updateSessionToken()
@@ -49,7 +76,7 @@ func New(config Config) *FishFishClient {
 		client.tickers.getNewSessionTicker = getNewSessionTicker
 	}
 
-	// Fetch domains ticker
+	// Sync domains ticker
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	ticker1 := time.NewTicker(time.Millisecond * time.Duration(config.CacheInterval))
 
@@ -57,25 +84,28 @@ func New(config Config) *FishFishClient {
 		for {
 			select {
 			case <-ticker1.C:
-				client.fetchDomains()
+				err := client.syncDomains()
+				if err != nil {
+					fmt.Println(err)
+				}
 			case <-ctx1.Done():
 				return
 			}
 		}
 	}()
 
-	fetchDomainsTicker := ClientTicker{
+	syncDomainsTicker := ClientTicker{
 		ticker:    ticker1,
 		ctxCancel: cancel1,
 	}
 
-	client.tickers.fetchDomainsTicker = fetchDomainsTicker
+	client.tickers.syncDomainsTicker = syncDomainsTicker
 
 	return client
 }
 
-func (client *FishFishClient) Close() {
-	FDT := client.tickers.fetchDomainsTicker
+func (client *Client) Close() {
+	FDT := client.tickers.syncDomainsTicker
 	GNST := client.tickers.getNewSessionTicker
 
 	FDT.ticker.Stop()

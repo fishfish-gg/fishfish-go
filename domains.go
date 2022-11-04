@@ -1,36 +1,40 @@
 package fishfish
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 )
 
-func (client *FishFishClient) fetchDomains() error {
+type DomainCache struct {
+	entries []string
+	mx      sync.Mutex
+}
+
+func (client *Client) syncDomains() error {
 	var err error
-	var resp http.Response
 	sessionToken := client.getSessionToken()
 
-	if len(sessionToken) > 0 {
-		httpResp, httpErr := client.authenticatedRequest("domains", "GET", "{}")
+	apiURL := client.getAPIUrl("domains")
+	body := bytes.NewBufferString("{}")
 
-		resp = *httpResp
-		err = httpErr
-	} else {
-		url := client.getAPIUrl("domains")
-		httpResp, httpErr := http.Get(url)
+	req, _ := http.NewRequest("GET", apiURL, body)
 
-		resp = *httpResp
-		err = httpErr
+	if sessionToken != "" {
+		req.Header.Set("Authorization", sessionToken)
 	}
+
+	resp, err := client.httpClient.Do(req)
 
 	if err != nil {
 		return err
 	}
 
 	if resp.StatusCode != 200 {
-		err = errors.New(fmt.Sprintf("API Returned non-200 status code.\nCode received: %d", resp.StatusCode))
+		err = errors.New(fmt.Sprintf("API Returned non-200 status code.\nCode received: %d\nAPI Response: %s", resp.StatusCode, resp.Body))
 		return err
 	}
 
@@ -51,14 +55,12 @@ func (client *FishFishClient) fetchDomains() error {
 	return err
 }
 
-func (client *FishFishClient) GetDomains() []string {
+func (client *Client) GetDomains() []string {
 	client.domainCache.mx.Lock()
 
 	domains := make([]string, len(client.domainCache.entries))
 
-	for index := range client.domainCache.entries {
-		domains[index] = client.domainCache.entries[index]
-	}
+	domains = append(domains, client.domainCache.entries...)
 
 	defer client.domainCache.mx.Unlock()
 

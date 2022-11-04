@@ -6,9 +6,24 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sync"
 )
 
-func (client *FishFishClient) fetchSessionToken() (string, error) {
+type SessionToken struct {
+	token string
+	mx    sync.Mutex
+}
+
+type createTokenRequest struct {
+	Permissions []string `json:"Permissions"`
+}
+
+type TokenResponse struct {
+	Token   string `json:"token"`
+	Expires int    `json:"expires"`
+}
+
+func (client *Client) fetchSessionToken() (string, error) {
 	var err error
 	var token string
 
@@ -17,8 +32,10 @@ func (client *FishFishClient) fetchSessionToken() (string, error) {
 	}
 
 	requestBodyJson, err := json.Marshal(requestBody)
+	apiURL := client.getAPIUrl("users/@me/tokens")
+	reqBody := bytes.NewBuffer(requestBodyJson)
 
-	req, _ := http.NewRequest("POST", client.getAPIUrl("users/@me/tokens"), bytes.NewBuffer(requestBodyJson))
+	req, _ := http.NewRequest("POST", apiURL, reqBody)
 	req.Header.Set("Authorization", client.config.Auth)
 
 	resp, err := client.httpClient.Do(req)
@@ -40,7 +57,7 @@ func (client *FishFishClient) fetchSessionToken() (string, error) {
 	return token, err
 }
 
-func (client *FishFishClient) updateSessionToken() string {
+func (client *Client) updateSessionToken() string {
 	sessionToken, err := client.fetchSessionToken()
 
 	if err != nil {
@@ -55,7 +72,7 @@ func (client *FishFishClient) updateSessionToken() string {
 	return sessionToken
 }
 
-func (client *FishFishClient) getSessionToken() string {
+func (client *Client) getSessionToken() string {
 	client.sessionToken.mx.Lock()
 
 	token := client.sessionToken.token
